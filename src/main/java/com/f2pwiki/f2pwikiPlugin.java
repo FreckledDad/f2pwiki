@@ -45,7 +45,7 @@ import java.util.Objects;
 @PluginDescriptor(
 		name = "F2P Wiki",
 		description = "Automatically updates your stats on external xptrackers when you log out",
-		tags = {"f2pwiki", "f2p wiki", "f2p.wiki", "external", "integration"},
+		tags = {"f2pwiki", "f2p wiki", "f2p.wiki", "external", "integration"}
 )
 @Slf4j
 public class f2pwikiPlugin extends Plugin {
