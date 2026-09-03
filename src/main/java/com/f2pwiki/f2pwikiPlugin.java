@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2018, Adam <Adam@sigterm.info>
  * Copyright (c) 2020, Alexsuperfly <alexsuperfly@users.noreply.github.com>
- * Copyright (c) 2020, Psikoi <https://github.com/psikoi>
+ * Copyright (c) 2020, Psikoi https://github.com/psikoi
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,28 +27,35 @@
 package com.f2pwiki;
 
 import com.google.inject.Provides;
+import java.io.IOException;
+import java.util.EnumSet;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.*;
+import net.runelite.api.Client;
+import net.runelite.api.GameState;
+import net.runelite.api.Player;
+import net.runelite.api.WorldType;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
-import okhttp3.*;
-
-import java.io.IOException;
-import java.util.EnumSet;
-import java.util.Objects;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.HttpUrl;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 @PluginDescriptor(
-		name = "F2P Wiki",
-		description = "Automatically updates your stats on external xptrackers when you log out",
-		tags = {"f2pwiki", "f2p wiki", "f2p.wiki", "external", "integration"}
+	name = "F2P Wiki",
+	description = "Automatically updates your stats on F2P Wiki when you log out",
+	tags = {"f2pwiki", "f2p wiki", "f2p.wiki", "external", "integration"}
 )
 @Slf4j
-public class f2pwikiPlugin extends Plugin {
+public class f2pwikiPlugin extends Plugin
+{
 	/**
 	 * Amount of EXP that must be gained for an update to be submitted.
 	 */
@@ -63,8 +70,24 @@ public class f2pwikiPlugin extends Plugin {
 	@Inject
 	private OkHttpClient okHttpClient;
 
-	private String lastUsername;
+	/**
+	 * Account hash of the currently tracked account.
+	 */
+	private long lastAccount;
+
+	/**
+	 * Username captured while the player is logged in.
+	 */
+	private String lastDisplayName;
+
+	/**
+	 * Whether the plugin needs to capture the current XP and username.
+	 */
 	private boolean fetchXp;
+
+	/**
+	 * Overall XP when the player was last logged in.
+	 */
 	private long lastXp;
 
 	@Provides
@@ -77,34 +100,46 @@ public class f2pwikiPlugin extends Plugin {
 	protected void startUp()
 	{
 		fetchXp = true;
+		lastAccount = -1L;
+		lastDisplayName = null;
 	}
 
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged gameStateChanged)
 	{
 		GameState state = gameStateChanged.getGameState();
+
 		if (state == GameState.LOGGED_IN)
 		{
-			if (!Objects.equals(client.getUsername(), lastUsername))
+			/*
+			 * Detect a new account and prepare to capture its
+			 * username and starting XP.
+			 */
+			if (lastAccount != client.getAccountHash())
 			{
-				lastUsername = client.getUsername();
+				lastAccount = client.getAccountHash();
 				fetchXp = true;
+				lastDisplayName = null;
 			}
 		}
-		else if (state == GameState.LOGIN_SCREEN)
+		else if (state == GameState.LOGIN_SCREEN || state == GameState.HOPPING)
 		{
-			Player local = client.getLocalPlayer();
-			if (local == null)
-			{
-				return;
-			}
-
+			/*
+			 * At this point the local player may already be null,
+			 * so use the username captured while logged in.
+			 */
 			long totalXp = client.getOverallExperience();
-			// Don't submit update unless xp threshold is reached
-			if (Math.abs(totalXp - lastXp) > XP_THRESHOLD)
+
+			// Don't submit an update unless the XP threshold is reached.
+			if (lastDisplayName != null && Math.abs(totalXp - lastXp) > XP_THRESHOLD)
 			{
-				log.debug("Submitting update for {}", local.getName());
-				update(local.getName());
+				log.debug(
+					"Submitting F2P Wiki update for {} accountHash {}",
+					lastDisplayName,
+					lastAccount
+				);
+
+				update(lastAccount, lastDisplayName);
 				lastXp = totalXp;
 			}
 		}
@@ -116,16 +151,30 @@ public class f2pwikiPlugin extends Plugin {
 		if (fetchXp)
 		{
 			lastXp = client.getOverallExperience();
-			fetchXp = false;
+
+			Player local = client.getLocalPlayer();
+
+			if (local != null)
+			{
+				lastDisplayName = local.getName();
+				fetchXp = false;
+
+				log.debug(
+					"Tracking F2P Wiki account {} with starting XP {}",
+					lastDisplayName,
+					lastXp
+				);
+			}
 		}
 	}
 
-	private void update(String username)
+	private void update(long accountHash, String username)
 	{
 		EnumSet<WorldType> worldTypes = client.getWorldType();
-		username = username.replace(" ", "_");
-		updateF2PWiki(username, worldTypes);
 
+		username = username.replace(" ", "_");
+
+		updateF2PWiki(username, worldTypes);
 	}
 
 	private void updateF2PWiki(String username, EnumSet<WorldType> worldTypes)
@@ -133,17 +182,17 @@ public class f2pwikiPlugin extends Plugin {
 		if (config.f2pwiki())
 		{
 			HttpUrl url = new HttpUrl.Builder()
-					.scheme("https")
-					.host("www.f2p.wiki")
-					.addPathSegment("players")
-					.addPathSegment(username)
-					.addPathSegment("update")
-					.build();
+				.scheme("https")
+				.host("www.f2p.wiki")
+				.addPathSegment("players")
+				.addPathSegment(username)
+				.addPathSegment("update")
+				.build();
 
 			Request request = new Request.Builder()
-					.header("User-Agent", "RuneLite")
-					.url(url)
-					.build();
+				.header("User-Agent", "RuneLite")
+				.url(url)
+				.build();
 
 			sendRequest("F2PWiki", request);
 		}
@@ -156,13 +205,29 @@ public class f2pwikiPlugin extends Plugin {
 			@Override
 			public void onFailure(Call call, IOException e)
 			{
-				log.warn("Error submitting {} update, caused by {}.", platform, e.getMessage());
+				log.warn(
+					"Error submitting {} update, caused by {}.",
+					platform,
+					e.getMessage()
+				);
 			}
 
 			@Override
 			public void onResponse(Call call, Response response)
 			{
-				response.close();
+				try
+				{
+					log.debug(
+						"{} update response: HTTP {} {}",
+						platform,
+						response.code(),
+						response.message()
+					);
+				}
+				finally
+				{
+					response.close();
+				}
 			}
 		});
 	}
